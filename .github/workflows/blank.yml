@@ -13,23 +13,29 @@ permissions:
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Mengambil source code dari repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Menyiapkan Java
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
+      # 3. Mengekstrak ZIP proyek Android
       - name: Extract Android project
         shell: bash
         run: |
           set -e
+
           mkdir -p source
+
           unzip -q spkrt-2027-training-companion.zip -d source
 
           SETTINGS=$(find source -type f \
@@ -37,30 +43,40 @@ jobs:
             | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: settings.gradle.kts tidak ditemukan."
+            echo "ERROR: settings.gradle(.kts) tidak ditemukan."
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Proyek ditemukan: $PROJECT_DIR"
+          echo "Proyek ditemukan di: $PROJECT_DIR"
+
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "ERROR: Folder app tidak ditemukan."
+            exit 1
+          fi
+
           ls -la "$PROJECT_DIR"
 
+      # 4. Memasang Gradle versi proyek
       - name: Install Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.3.1"
 
-      
-      - name: Generate debug keystore if missing
+      # 5. Memeriksa dan membuat debug keystore
+      - name: Generate debug keystore
         shell: bash
         run: |
           set -e
 
-          KEYSTORE="$PROJECT_DIR/../debug.keystore"
+          KEYSTORE="$PROJECT_DIR/debug.keystore"
 
           if [ ! -f "$KEYSTORE" ]; then
+            echo "Membuat debug keystore..."
+
             keytool -genkeypair \
               -v \
               -keystore "$KEYSTORE" \
@@ -73,20 +89,57 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          echo "Debug keystore tersedia:"
-          ls -l "$KEYSTORE"
+          echo "Memeriksa debug keystore:"
+          ls -lh "$KEYSTORE"
 
+          test -f "$KEYSTORE"
+
+      # 6. Memeriksa konfigurasi Firebase
+      - name: Check Google Services configuration
+        shell: bash
+        run: |
+          if [ -f "$PROJECT_DIR/app/google-services.json" ]; then
+            echo "google-services.json ditemukan."
+          else
+            echo "PERINGATAN: google-services.json tidak ditemukan."
+            echo "Fitur Firebase mungkin belum dapat digunakan."
+          fi
+
+      # 7. Membangun APK debug
       - name: Build debug APK
         shell: bash
         run: |
+          set -e
+
           cd "$PROJECT_DIR"
+
           gradle assembleDebug --no-daemon
 
+      # 8. Memastikan APK berhasil dibuat
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -e
 
+          APK=$(find "$PROJECT_DIR" \
+            -type f \
+            -path "*/build/outputs/apk/debug/*.apk" \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK tidak ditemukan."
+            exit 1
+          fi
+
+          echo "APK berhasil dibuat:"
+          ls -lh "$APK"
+
+      # 9. Mengunggah APK agar dapat diunduh
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SPKRT2027-APK
-          path: source/**/build/outputs/apk/debug/*.apk
+          path: |
+            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
